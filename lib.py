@@ -75,23 +75,27 @@ def generate_mask(m, pix_size, ell_cutoff):
     pix_to_rad = pix_size/60 * np.pi/180 
     ell_scale_factor = 2 * np.pi / pix_to_rad  
     ell2d = R * ell_scale_factor 
-    ell2d_c =  np.copy(ell2d)
     
     ell2d[(ell2d >= ell_cutoff)] =0
     ell2d[(ell2d!=0)] = 1
     ell2d_c = 1 - ell2d
     
     dft1 = dft(nside)
-    dft2 = np.kron(dft1, dft1)
-    dft2_inv = dft2.T/nside**2
+    D = np.kron(dft1, dft1)
+    D_inv = np.linalg.inv(D)    
     
-    fft2_map = (dft2 @ m.flatten()).reshape(nside, nside)
+    fft2_map = (D @ m.flatten()).reshape(nside, nside)
     fft2_map_inv = np.linalg.inv(fft2_map)
+        
+    M = np.outer((ell2d * fft2_map).flatten(), fft2_map_inv.flatten())
+    M_c = np.outer((ell2d_c * fft2_map).flatten(), fft2_map_inv.flatten())
     
-    M = ell2d * fft2_map @ fft2_map_inv
-    M_c = ell2d_c * fft2_map @ fft2_map_inv
-    
-    return M, M_c, dft2, dft2_inv
+    recon_fft = M @ fft2_map.flatten() + M_c @ fft2_map.flatten()
+    factor = np.nanmean(recon_fft / fft2_map.flatten())
+    M /= factor
+    M_c /= factor
+        
+    return M, M_c, D, D_inv, ell2d, ell2d_c
 
 def generate_baselines(baseline_length, nsamp, rate):
     baseline_length_samp = rate * baseline_length
