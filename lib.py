@@ -80,9 +80,9 @@ def generate_pointing(nside, lr_only=False, ud_only=False):
 def generate_noise(nsamp, dt, fknee, alpha, sigma):
     freq = np.abs(np.fft.fftfreq(nsamp, dt))
     noise_spec = (1+(np.maximum(freq,freq[1])/fknee)**-alpha)*sigma**2
-    plt.loglog(freq, noise_spec)
-    plt.grid()
-    plt.show()
+#     plt.loglog(freq, noise_spec)
+#     plt.grid()
+#     plt.show()
     rand = np.fft.fft(np.random.default_rng().standard_normal(nsamp))
     return np.fft.ifft(rand * noise_spec**0.5).real
 
