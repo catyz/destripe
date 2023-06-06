@@ -5,6 +5,32 @@ import pymaster as nmt
 from tqdm import tqdm
 import scipy.signal as signal
 
+def get_mask(nside):
+    msk = np.zeros(hp.nside2npix(nside))
+    th, ph = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
+    ph[np.where(ph > np.pi)[0]] -= 2 * np.pi
+    msk[np.where((th < 2.63) & (th > 1.86) &
+                 (ph > -np.pi / 4) & (ph < np.pi / 4))[0]] = 1.
+    return msk
+
+def depth2nl(map_depth, beam_fwhm, lmax):
+    ell = np.arange(lmax)
+    return map_depth**2 * np.exp(ell*(ell+1) * beam_fwhm **2 / 8/np.log(2))
+
+def sigma2fwhm(sigma):
+    return (8*np.log(2))**0.5 * sigma
+
+def fwhm2sigma(fwhm):
+    return (8*np.log(2))**-0.5 * fwhm
+
+def almxfl(alm, fl):
+    #For polarized alm, for which hp is too dumb to handle
+    alm_corrected = np.empty_like(alm)
+    for i in range(3):
+        alm_corrected[i] = hp.almxfl(alm[i], fl)
+    
+    return alm_corrected
+
 def create_pixels():
     #Hardcoded for nside 128, lol
     row_width = 200 #pixels
@@ -181,30 +207,29 @@ def get_Q_lb(ell_centers, nside):
         
     return Q_bl.T
 
-def map2cl(ells, mask_apo, fl, m1, m2):    
-    nside = hp.get_nside(mask_apo)
-    bl = get_bl(nside)
-    mll = get_mll(mask_apo, nside)
-    P_bl = get_P_bl(ells, nside)
-    Q_lb = get_Q_lb(ells, nside)
+# def map2cl(ells, mask_apo, fl, m1, m2):    
+#     nside = hp.get_nside(mask_apo)
+#     bl = get_bl(nside)
+#     mll = get_mll(mask_apo, nside)
+#     P_bl = get_P_bl(ells, nside)
+#     Q_lb = get_Q_lb(ells, nside)
     
-    pcl = hp.anafast(mask_apo*m1, mask_apo*m2)[:4]
-    debiased_cl = np.zeros((4, len(ells)))
+#     pcl = hp.anafast(mask_apo*m1, mask_apo*m2)[:4]
+#     debiased_cl = np.zeros((4, len(ells)))
     
-    for i in range(4):
-        if fl is not None:
-            K_bb_inv = np.linalg.inv(P_bl @ mll * fl[i] * bl**2 @ Q_lb)
-        else:
-            K_bb_inv = np.linalg.inv(P_bl @ mll * bl**2 @ Q_lb)
+#     for i in range(4):
+#         if fl is not None:
+#             K_bb_inv = np.linalg.inv(P_bl @ mll * fl[i] * bl**2 @ Q_lb)
+#         else:
+#             K_bb_inv = np.linalg.inv(P_bl @ mll * bl**2 @ Q_lb)
     
-        debiased_cl[i] = K_bb_inv @ P_bl @ pcl[i]
+#         debiased_cl[i] = K_bb_inv @ P_bl @ pcl[i]
         
-    return debiased_cl
+#     return debiased_cl
     
-def sim_pcl(input_cl, pixels, n_sims=1, n_obs=1, map_seed_start=0):
+def sim_pcl(input_cl, pixels, fwhm_grd=1, n_sims=1, n_obs=1, map_seed_start=0):
     nside=128   
     lmax = 3*nside-1
-    sigmab = hp.nside2resol(nside)
     
     mask = np.zeros(12*nside**2)
     mask[pixels[0]] = 1
@@ -215,7 +240,7 @@ def sim_pcl(input_cl, pixels, n_sims=1, n_obs=1, map_seed_start=0):
         for i in tqdm(range(n_sims)):
             if map_seed_start is not None:
                 np.random.seed(map_seed_start + i)
-            input_map = hp.synfast(input_cl, nside, sigma=sigmab)
+            input_map = hp.synfast(input_cl, nside, fwhm=np.deg2rad(fwhm_grd))
             coadd_map1, coadd_map2 = coadd_split(input_map, pixels, n_obs, I_noise_params=None, P_noise_params=None, noise_seed_start=0, replace=False)
             pcl += hp.anafast(mask_apo*coadd_map1, mask_apo*coadd_map2)
         pcl /= n_sims
@@ -227,31 +252,112 @@ def sim_pcl(input_cl, pixels, n_sims=1, n_obs=1, map_seed_start=0):
         for i in tqdm(range(n_sims)):
             if map_seed_start is not None:
                 np.random.seed(map_seed_start + i)
-            input_map = hp.synfast(input_cl, nside, sigma=sigmab, new=True)
+            input_map = hp.synfast(input_cl, nside, fwhm=np.deg2rad(fwhm_grd), new=True)
             coadd_map1, coadd_map2 = coadd_split(input_map, pixels, n_obs, I_noise_params=None, P_noise_params=None, noise_seed_start=0, replace=False)
             pcl[i] = hp.anafast(mask_apo*coadd_map1, mask_apo*coadd_map2)[:4]
         
         return np.mean(pcl, axis=0) 
 
-def sim_cl2cl(input_cl, pixels, fl=None, n_sims=1, n_obs=1, I_noise_params=(10,0.5,2,100), P_noise_params=(10,0.1,0.1,150), noise_seed_start=0, map_seed_start=0, bin_size=16, replace=False):
-    nside=128        
-    lmax = 3*nside-1
-    sigmab = hp.nside2resol(nside)
-    bl = get_bl(nside)
-    ell_bin_centers = nmt.NmtBin.from_nside_linear(nside, bin_size).get_effective_ells()
-    mask = np.zeros(12*nside**2)
-    mask[pixels[0]] = 1
-    mask_apo = nmt.mask_apodization(mask, 5, apotype="Smooth")
+# def sim_cl2cl(input_cl, pixels, fl=None, n_sims=1, n_obs=1, I_noise_params=(10,0.5,2,100), P_noise_params=(10,0.1,0.1,150), noise_seed_start=0, map_seed_start=0, bin_size=16, replace=False):
+#     nside=128        
+#     lmax = 3*nside-1
+#     sigmab = hp.nside2resol(nside)
+#     bl = get_bl(nside)
+#     ell_bin_centers = nmt.NmtBin.from_nside_linear(nside, bin_size).get_effective_ells()
+#     mask = np.zeros(12*nside**2)
+#     mask[pixels[0]] = 1
+#     mask_apo = nmt.mask_apodization(mask, 5, apotype="Smooth")
     
-    cl = np.zeros((n_sims, input_cl.shape[0], len(ell_bin_centers)))
+#     cl = np.zeros((n_sims, input_cl.shape[0], len(ell_bin_centers)))
+    
+#     for i in tqdm(range(n_sims)):
+#         if map_seed_start is not None:
+#             np.random.seed(map_seed_start + i)
+#         input_map = hp.synfast(input_cl, nside, sigma=sigmab, new=True)        
+#         coadd_map1, coadd_map2 = coadd_split(input_map, pixels, n_obs, I_noise_params, P_noise_params, noise_seed_start, replace)
+        
+#         debiased_cross_cl = map2cl(ell_bin_centers, mask_apo, fl, coadd_map1, coadd_map2)
+#         cl[i] = debiased_cross_cl
+    
+#     return ell_bin_centers, cl
+
+def run_sim(input_cl, pixels, nside, mask, b, fwhm_grd=1, fwhm_sat=1.5, fl=None, leakage=None, pure_b=True, replace=False, combine=False, fill=False, n_sims=10, map_seed_start=123):
+    lmax = 3*nside-1
+    w = nmt.NmtWorkspace()
+    ells = b.get_effective_ells()
+    mask_apo = nmt.mask_apodization(mask, 5, apotype="Smooth") 
+    
+    if combine is True:
+        bl = hp.gauss_beam(np.deg2rad(fwhm_sat), lmax)
+        f = nmt.NmtField(mask_apo, [np.empty(12*nside**2), np.empty(12*nside**2)], beam=bl, purify_b=pure_b)
+        if fill is True:
+            f = nmt.NmtField(np.ones_like(mask), [np.empty(12*nside**2), np.empty(12*nside**2)], beam=bl, purify_b=False)
+    else:
+        bl = hp.gauss_beam(np.deg2rad(fwhm_grd), lmax)        
+        f = nmt.NmtField(mask_apo, [np.empty(12*nside**2), np.empty(12*nside**2)], beam=bl, purify_b=pure_b)
+        
+    w.compute_coupling_matrix(f, f, b)
+    
+    if fl is not None:
+        fl4 = np.interp(np.arange(0,lmax+1, 0.25), np.arange(lmax+1), fl)
+        mll = w.get_coupling_matrix()
+        w.update_coupling_matrix(mll * fl4)
+    
+    Cls = np.zeros((n_sims, 4, len(ells)))
     
     for i in tqdm(range(n_sims)):
-        if map_seed_start is not None:
-            np.random.seed(map_seed_start + i)
-        input_map = hp.synfast(input_cl, nside, sigma=sigmab, new=True)        
-        coadd_map1, coadd_map2 = coadd_split(input_map, pixels, n_obs, I_noise_params, P_noise_params, noise_seed_start, replace)
+        np.random.seed(map_seed_start + i)
+        if combine is True:
+            input_map = hp.synfast(input_cl, nside, fwhm=np.deg2rad(fwhm_sat), new=True)   
+        else:
+            input_map = hp.synfast(input_cl, nside, fwhm=np.deg2rad(fwhm_grd), new=True)   
+            
+        coadd_map1, coadd_map2 = coadd_split(input_map, pixels, n_obs=1, I_noise_params=None, P_noise_params=None, replace=replace)
         
-        debiased_cross_cl = map2cl(ell_bin_centers, mask_apo, fl, coadd_map1, coadd_map2)
-        cl[i] = debiased_cross_cl
-    
-    return ell_bin_centers, cl
+        if combine is True:
+            lost_map1 = mask*input_map - coadd_map1
+            lost_map2 = mask*input_map - coadd_map2
+            
+#             alml1 = hp.map2alm(lost_map1)
+#             alml2 = hp.map2alm(lost_map2)
+                        
+#             alml1 = almxfl(alml1, 1/bl_diff)
+#             alml2 = almxfl(alml2, 1/bl_diff)
+
+#             b_diff_fwhm = np.sqrt(fwhm_sat**2 - fwhm_grd**2)
+#             alm1 = hp.map2alm(hp.smoothing(coadd_map1, fwhm=b_diff_fwhm))
+#             alm2 = hp.map2alm(hp.smoothing(coadd_map2, fwhm=b_diff_fwhm))
+
+#             alm1 = hp.map2alm(coadd_map1)
+#             alm2 = hp.map2alm(coadd_map2)
+            
+#             coadd_map1 = mask*hp.alm2map(alm1 + alml1, nside)
+#             coadd_map2 = mask*hp.alm2map(alm2 + alml2, nside)
+            coadd_map1 += lost_map1
+            coadd_map2 += lost_map2
+        
+            #For noiseless only
+            assert np.abs(coadd_map1 - coadd_map2).max() < 1e-14 
+            assert np.abs(coadd_map1 - mask*input_map).max() < 1e-14
+        
+            if fill is True:
+                outside = (1-mask) * input_map
+                coadd_map1 += outside
+                coadd_map2 += outside
+                
+                assert np.abs(coadd_map1 - input_map).max() < 1e-14
+                
+                f1 = nmt.NmtField(np.ones_like(mask), [coadd_map1[1], coadd_map1[2]])
+                f2 = nmt.NmtField(np.ones_like(mask), [coadd_map2[1], coadd_map2[2]])
+                
+            else:
+                f1 = nmt.NmtField(mask_apo, [coadd_map1[1], coadd_map1[2]], purify_b=pure_b)
+                f2 = nmt.NmtField(mask_apo, [coadd_map2[1], coadd_map2[2]], purify_b=pure_b)            
+            
+        else:
+            f1 = nmt.NmtField(mask_apo, [coadd_map1[1], coadd_map1[2]], purify_b=pure_b)
+            f2 = nmt.NmtField(mask_apo, [coadd_map2[1], coadd_map2[2]], purify_b=pure_b)
+
+        Cls[i] = compute_master(f1, f2, w, leakage)
+
+    return np.mean(Cls, axis=0), np.std(Cls, axis=0)
