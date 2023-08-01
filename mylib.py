@@ -5,6 +5,54 @@ import pymaster as nmt
 from tqdm import tqdm
 import scipy.signal as signal
 
+def filt(m, pix, n_sub=1000, deg=10):
+    npix = 12*hp.get_nside(m)**2
+    if len(m) == 3:
+        filtered_map = np.empty((3, npix))
+        for i in range(3):
+            tod = m[i][pix]
+            filtered_tod = subscan_polyfilter(tod, n_sub=n_sub, deg=deg) 
+            filtered_map[i] = PT(filtered_tod, pix, npix)
+    else:
+        tod = m[pix]
+        filtered_tod = subscan_polyfilter(tod, n_sub=n_sub, deg=deg) 
+        filtered_map = PT(filtered_tod, pix, npix)
+    return filtered_map
+
+def mask2pix(mask):
+    pix = np.where(mask!=0)[0]
+    diff = np.diff(pix)
+    breaks = np.where(diff>1)[0]
+    rows = []
+    for i in range(len(breaks)):
+        if i == 0:
+            rows.append(pix[:breaks[i]+1])
+        else:
+            rows.append(pix[breaks[i-1]+1:breaks[i]]+1)
+    return rows
+
+def remove_almB(m):
+    nside = hp.get_nside(m)
+    almT, almE, almB = hp.map2alm(m)
+    return hp.alm2map((almT, almE, np.zeros_like(almE)), nside)
+    
+def wiener_filter(full_map, signal_cl, noise_cl):
+    almT, almE, almB = hp.map2alm(full_map)
+    nside = hp.get_nside(full_map)
+    full_cl = signal_cl + noise_cl 
+    W_11 = (signal_cl[1] * full_cl[0] - signal_cl[3]*full_cl[3]) / (full_cl[1] * full_cl[0] - full_cl[3]**2)
+    W_01 = (signal_cl[3] * full_cl[1] - signal_cl[1]*full_cl[3]) / (full_cl[1] * full_cl[0] - full_cl[3]**2)
+#     return hp.alm2map((almT, hp.almxfl(almE, W_11)+hp.almxfl(almT, W_01), almB), nside)
+    return hp.alm2map((almT, hp.almxfl(almE, W_11)+hp.almxfl(almT, W_01), np.zeros_like(almT)), nside)
+
+
+def almxfl(alm, fl):
+    #For polarized alm, for which hp is too dumb to handle
+    alm_corrected = np.empty_like(alm)
+    for i in range(3):
+        alm_corrected[i] = hp.almxfl(alm[i], fl)
+    return alm_corrected
+
 def get_mask(nside):
     msk = np.zeros(hp.nside2npix(nside))
     th, ph = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
@@ -13,9 +61,22 @@ def get_mask(nside):
                  (ph > -np.pi / 4) & (ph < np.pi / 4))[0]] = 1.
     return msk
 
-def depth2nl(map_depth, beam_fwhm, lmax):
-    ell = np.arange(lmax)
-    return map_depth**2 * np.exp(ell*(ell+1) * beam_fwhm **2 / 8/np.log(2))
+def get_Nl(depth_ukarcmin, knee, alpha, lmax):
+    n = (np.pi/(180*60) * depth_ukarcmin)**2
+    l = np.arange(lmax+1)
+    
+    if knee !=0 and alpha != 0:
+        Nl = n * (l/knee)**alpha + n
+    else:
+        Nl = n * np.ones(len(l))
+        
+#     if beam_fwhm != 0:
+#         Nl *= np.exp(l*(l+1) * beam_fwhm **2 / 8/np.log(2))
+        
+    Nl[0] = 0 
+    Nl[1] = 0 
+    
+    return Nl
 
 def sigma2fwhm(sigma):
     return (8*np.log(2))**0.5 * sigma
@@ -164,10 +225,12 @@ def compute_master(f_a, f_b, wsp, leakage=None):
     cl_decoupled = wsp.decouple_cell(cl_coupled)
     return cl_decoupled
 
-def get_mll(mask_apo, nside):
+def get_mll(mask_apo, nside, b, pol=True, purify_b=True):
     w = nmt.NmtWorkspace()
-    b = nmt.NmtBin.from_nside_linear(nside, 16)
-    f = nmt.NmtField(mask_apo, [np.ones(12*nside**2)])
+    if pol:
+        f = nmt.NmtField(mask_apo, [np.empty(12*nside**2), np.empty(12*nside**2)], purify_b=purify_b)
+    else:
+        f = nmt.NmtField(mask_apo, [np.empty(12*nside**2)])
     w.compute_coupling_matrix(f, f, b)
     return w.get_coupling_matrix()
 
