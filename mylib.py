@@ -5,19 +5,30 @@ import pymaster as nmt
 from tqdm import tqdm
 import scipy.signal as signal
 
-def filt(m, pix, n_sub=1000, deg=10):
+def tod_filter(m, pix, deg=10):
     npix = 12*hp.get_nside(m)**2
+    filtered_map = np.empty_like(m)
     if len(m) == 3:
-        filtered_map = np.empty((3, npix))
         for i in range(3):
-            tod = m[i][pix]
-            filtered_tod = subscan_polyfilter(tod, n_sub=n_sub, deg=deg) 
-            filtered_map[i] = PT(filtered_tod, pix, npix)
+            tod = m[i]
+            filtered_tod = []
+            for row in pix:
+                subscan = tod[row]
+                filtered_tod.append(polyfilter(subscan, deg=deg))
+            filtered_map[i] = PT(np.concatenate(filtered_tod), np.concatenate(pix), npix)
     else:
-        tod = m[pix]
-        filtered_tod = subscan_polyfilter(tod, n_sub=n_sub, deg=deg) 
-        filtered_map = PT(filtered_tod, pix, npix)
+        filtered_tod = []
+        for row in pix:
+            subscan = m[row]
+            filtered_tod.append(polyfilter(subscan, deg=deg))
+        filtered_map = PT(np.concatenate(filtered_tod), np.concatenate(pix), npix)
     return filtered_map
+
+def polyfilter(tod, deg=10):
+    times = np.arange(len(tod))
+    poly = np.polynomial.polynomial.Polynomial.fit(times, tod, deg)
+    tod -= poly(times)
+    return tod
 
 def mask2pix(mask):
     pix = np.where(mask!=0)[0]
@@ -61,7 +72,8 @@ def get_mask(nside):
                  (ph > -np.pi / 4) & (ph < np.pi / 4))[0]] = 1.
     return msk
 
-def get_Nl(depth_ukarcmin, knee, alpha, lmax):
+def get_Nl(noise_props, lmax):
+    depth_ukarcmin, knee, alpha = noise_props
     n = (np.pi/(180*60) * depth_ukarcmin)**2
     l = np.arange(lmax+1)
     
@@ -232,7 +244,7 @@ def get_mll(mask_apo, nside, b, pol=True, purify_b=True):
     else:
         f = nmt.NmtField(mask_apo, [np.empty(12*nside**2)])
     w.compute_coupling_matrix(f, f, b)
-    return w.get_coupling_matrix()
+    return w.get_coupling_matrix(), w.get_bandpower_windows()
 
 def get_bl(nside):
     lmax = 3*nside-1
@@ -249,6 +261,17 @@ def get_fl(input_cl, pcl, bl, mll, niter=3):
     for j in range(niter):
         fl_i = fl_itr(fl_i, pcl, mll, bcl)
     return fl_i
+
+# def fl_itr(fl, cl_input, pcl, mll, bl, fskyw2):
+#     return fl + (pcl - (fl * mll *bl**2) @ cl_input)/(bl**2 * fskyw2 * cl_input)
+
+# def get_fl(cl_th, cl_input, pcl, bl, mll, fskyw2, niter=3):
+#     fl_i = pcl / (cl_th * bl**2 * fskyw2)
+#     fl_i[0:2] = 0
+#     for j in range(niter):
+#         fl_i = fl_itr(fl_i, cl_input, pcl, mll, bl, fskyw2)
+#         fl_i[0:2] = 0
+#     return fl_i
 
 def get_P_bl(ell_centers, nside):
     width = np.mean(np.diff(ell_centers))
