@@ -69,11 +69,10 @@ def get_mask(nside):
     th, ph = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
     ph[np.where(ph > np.pi)[0]] -= 2 * np.pi
     msk[np.where((th < 2.63) & (th > 1.86) &
-                 (ph > -np.pi / 4) & (ph < np.pi / 4))[0]] = 1.
+                 (ph > -np.pi / 3) & (ph < np.pi / 3))[0]] = 1.
     return msk
 
-def get_Nl(noise_props, lmax):
-    depth_ukarcmin, knee, alpha = noise_props
+def get_Nl(depth_ukarcmin, knee, alpha, lmax):
     n = (np.pi/(180*60) * depth_ukarcmin)**2
     l = np.arange(lmax+1)
     

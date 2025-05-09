@@ -7,14 +7,20 @@ import mylib
 import pymaster as nmt
 from tqdm import tqdm
 import argparse
+import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--ground-P-noise-props',nargs='+', type=float)
 parser.add_argument('--sat-T-noise-props',nargs='+', type=float)
 parser.add_argument('--sat-P-noise-props',nargs='+', type=float)
+parser.add_argument('--poly-deg', type=int)
 parser.add_argument('--noBB', action='store_true')
 parser.add_argument('--outname')
 args = parser.parse_args()
+
+outdir = f'filtering_sim_deg{args.poly_deg}'
+if not os.path.exists(outdir):
+    os.makedirs(outdir)
 
 nside = 512
 npix = 12*nside**2
@@ -40,13 +46,10 @@ input_cls_onlyBB[1] = np.zeros(lmax+1)
 input_cls_onlyBB[3] = np.zeros(lmax+1)
 
 #Baseline/goal SAT 145 GHz. l_knee = 50/25, n= 3.3/2.1
-# ground_P_noise_props = [3, 0, 0]
 Nl_P = mylib.get_Nl(args.ground_P_noise_props, lmax)
 ground_noise_cls = np.array([np.zeros(lmax+1), Nl_P, Nl_P, np.zeros(lmax+1)])
 
 #Planck Npipe2020 144ghz
-# sat_T_noise_props = [25, 0, 0]
-# sat_P_noise_props = [50, 0, 0]
 Nl_T = mylib.get_Nl(args.sat_T_noise_props, lmax)
 Nl_P = mylib.get_Nl(args.sat_P_noise_props, lmax)
 sat_noise_cls = np.array([Nl_T, Nl_P, Nl_P, np.zeros(lmax+1)])
@@ -74,7 +77,7 @@ pcl_bb_vec = np.empty((n_sims, lmax+1))
 for i in tqdm(range(n_sims)):
     np.random.seed(i+1000)
     input_map = hp.synfast(input_cls_onlyBB, nside, fwhm=fwhm, new=True)
-    filtered_input_map = mask_apo * mylib.tod_filter(input_map, pix, deg=20)
+    filtered_input_map = mask_apo * mylib.tod_filter(input_map, pix, deg=args.poly_deg)
     pcl_bb_vec[i] = hp.anafast(filtered_input_map)[2]
 #     cl_input_vec[i] = hp.anafast(input_map)/bl**2
     
@@ -86,6 +89,12 @@ if np.abs(pcl_bb).max() == 0:
     fl_bb[0:2] = 0
 else:
     fl_bb = mylib.get_fl(input_cls[2], pcl_bb, bl, mll)
+    plt.plot(fl_bb)
+    plt.xlim([10, 600])
+    plt.ylim([0, 1])
+    plt.grid()
+    plt.xlabel('ell')
+    plt.savefig(f'{outdir}/fl_bb')
 
 w_KS = nmt.NmtWorkspace()
 f_KS = nmt.NmtField(mask_apo, np.empty((2, npix)), beam=bl*np.sqrt(fl_bb), purify_b=True)
@@ -117,14 +126,14 @@ for i in tqdm(range(n_sims)):
     sat_noise = hp.synfast(sat_noise_cls, nside, new=True)
 
     ground_map = input_map + ground_noise
-    filtered_ground_map = mylib.tod_filter(ground_map, pix, deg=20)
+    filtered_ground_map = mylib.tod_filter(ground_map, pix, deg=args.poly_deg)
 
     sat_map = input_map + sat_noise
     wienered_sat_map = mylib.wiener_filter(sat_map, input_cls, sat_noise_cls)
     restored_map_ext = mask*filtered_ground_map + (1-mask)*wienered_sat_map
     B_map_ext = hp.alm2map(hp.map2alm(restored_map_ext)[2], nside)
     
-    lost_map = wienered_sat_map - mylib.tod_filter(wienered_sat_map, pix, deg=20)
+    lost_map = wienered_sat_map - mylib.tod_filter(wienered_sat_map, pix, deg=args.poly_deg)
     restored_map_both = filtered_ground_map + lost_map
     B_map_both = hp.alm2map(hp.map2alm(restored_map_both)[2], nside)
     
@@ -180,4 +189,4 @@ for ax in axes.flatten():
     ax.set_xlabel('ell')
     ax.set_ylabel('D_ell')
     
-plt.savefig(f'{args.outname}')
+plt.savefig(f'{outdir}/{args.outname}')
